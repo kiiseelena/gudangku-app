@@ -8,4 +8,6 @@ services:
       - "3000:3000"
     volumes:
       - ./db.json:/usr/src/app/db.json
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
     restart: unless-stopped

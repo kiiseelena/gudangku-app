@@ -9,10 +9,126 @@ const DB_FILE = path.join(__dirname, 'db.json');
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Helper: Memuat Database
+// Dynamic import of PG Pool to maintain absolute compatibility
+let Pool = null;
+try {
+  Pool = require('pg').Pool;
+} catch (err) {
+  console.warn("Notice: driver 'pg' not installed. PostgreSQL mode will be disabled unless 'pg' is installed.");
+}
+
+const isPgActive = !!process.env.DATABASE_URL && !!Pool;
+let pool = null;
+
+if (isPgActive) {
+  console.log("Neon Postgres Database Mode Active!");
+  pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+      rejectUnauthorized: false
+    }
+  });
+} else {
+  console.log("Local JSON Database Mode Active! (db.json)");
+}
+
+// ================= SCHEMA INITIALIZATION (POSTGRES) =================
+async function initDbSchema() {
+  if (!isPgActive) return;
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    
+    // Create barang table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS barang (
+        id_barang VARCHAR(50) PRIMARY KEY,
+        nama_barang VARCHAR(255) NOT NULL,
+        jumlah_barang INTEGER NOT NULL DEFAULT 0,
+        jenis_barang VARCHAR(50) NOT NULL,
+        tanggal_masuk DATE NOT NULL,
+        tanggal_keluar DATE
+      )
+    `);
+
+    // Create orders table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS orders (
+        id_order VARCHAR(50) PRIMARY KEY,
+        nama_pelanggan VARCHAR(255) NOT NULL,
+        id_barang VARCHAR(50) NOT NULL REFERENCES barang(id_barang) ON DELETE CASCADE,
+        jumlah_order INTEGER NOT NULL,
+        status_order VARCHAR(50) NOT NULL,
+        tanggal_order DATE NOT NULL
+      )
+    `);
+
+    // Create users table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS users (
+        username VARCHAR(50) PRIMARY KEY,
+        role VARCHAR(50) NOT NULL,
+        created_at DATE NOT NULL
+      )
+    `);
+
+    // Create sessions table
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sessions (
+        session INTEGER PRIMARY KEY,
+        role VARCHAR(50) NOT NULL,
+        timestamp VARCHAR(50) NOT NULL
+      )
+    `);
+
+    // Seed default admin if users table is empty
+    const resUsers = await client.query('SELECT COUNT(*) FROM users');
+    if (parseInt(resUsers.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO users (username, role, created_at)
+        VALUES ('himmad_admin', 'Admin', CURRENT_DATE)
+      `);
+    }
+
+    // Seed default session if sessions table is empty
+    const resSessions = await client.query('SELECT COUNT(*) FROM sessions');
+    if (parseInt(resSessions.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO sessions (session, role, timestamp)
+        VALUES (5001, 'Admin', '08:30:15')
+      `);
+    }
+
+    // Seed initial products if barang table is empty
+    const resBarang = await client.query('SELECT COUNT(*) FROM barang');
+    if (parseInt(resBarang.rows[0].count) === 0) {
+      await client.query(`
+        INSERT INTO barang (id_barang, nama_barang, jumlah_barang, jenis_barang, tanggal_masuk, tanggal_keluar)
+        VALUES 
+        ('ELE-101', 'PixelMate Monitor', 595, 'Electronics', '2026-01-15', NULL),
+        ('ELE-102', 'FusionLink Router', 761, 'Electronics', '2026-02-10', NULL)
+      `);
+      
+      await client.query(`
+        INSERT INTO orders (id_order, nama_pelanggan, id_barang, jumlah_order, status_order, tanggal_order)
+        VALUES
+        ('ORD-1001', 'John Doe', 'ELE-101', 5, 'Completed', '2026-06-01')
+      `);
+    }
+
+    await client.query('COMMIT');
+    console.log("PostgreSQL Database Schema Initialized successfully on Neon.");
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error("Failed to initialize PostgreSQL schema:", err);
+  } finally {
+    client.release();
+  }
+}
+
+// ================= LOCAL JSON FALLBACK HELPERS =================
 function loadDatabase() {
   if (!fs.existsSync(DB_FILE)) {
-    // Inisialisasi awal database kosong sesuai skema baru jika file tidak ada
     const initialDB = {
       barang: [
         {
@@ -35,7 +151,7 @@ function loadDatabase() {
       orders: [
         {
           id_order: "ORD-1001",
-          "nama_pelanggan": "John Doe",
+          nama_pelanggan: "John Doe",
           id_barang: "ELE-101",
           jumlah_order: 5,
           status_order: "Completed",
@@ -63,12 +179,346 @@ function loadDatabase() {
   return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
 }
 
-// Helper: Menyimpan Database
 function saveDatabase(data) {
   fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-// Map Kategori ke Prefix ID
+// ================= ABSTRACT DATABASE WRAPPERS =================
+
+async function dbGetBarang() {
+  if (isPgActive) {
+    const res = await pool.query('SELECT * FROM barang ORDER BY id_barang ASC');
+    return res.rows.map(r => ({
+      ...r,
+      tanggal_masuk: r.tanggal_masuk ? r.tanggal_masuk.toISOString().split('T')[0] : '',
+      tanggal_keluar: r.tanggal_keluar ? r.tanggal_keluar.toISOString().split('T')[0] : ''
+    }));
+  } else {
+    return loadDatabase().barang;
+  }
+}
+
+async function dbGetBarangById(id) {
+  if (isPgActive) {
+    const res = await pool.query('SELECT * FROM barang WHERE id_barang = $1', [id]);
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      ...r,
+      tanggal_masuk: r.tanggal_masuk ? r.tanggal_masuk.toISOString().split('T')[0] : '',
+      tanggal_keluar: r.tanggal_keluar ? r.tanggal_keluar.toISOString().split('T')[0] : ''
+    };
+  } else {
+    return loadDatabase().barang.find(b => b.id_barang === id) || null;
+  }
+}
+
+async function dbInsertBarang(item) {
+  if (isPgActive) {
+    await pool.query(
+      `INSERT INTO barang (id_barang, nama_barang, jumlah_barang, jenis_barang, tanggal_masuk, tanggal_keluar)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null]
+    );
+  } else {
+    const db = loadDatabase();
+    db.barang.push(item);
+    saveDatabase(db);
+  }
+}
+
+async function dbUpdateBarang(id, item) {
+  if (isPgActive) {
+    await pool.query(
+      `UPDATE barang SET id_barang = $1, nama_barang = $2, jumlah_barang = $3, jenis_barang = $4, tanggal_masuk = $5, tanggal_keluar = $6 WHERE id_barang = $7`,
+      [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null, id]
+    );
+  } else {
+    const db = loadDatabase();
+    const idx = db.barang.findIndex(b => b.id_barang === id);
+    if (idx !== -1) {
+      db.barang[idx] = item;
+      saveDatabase(db);
+    }
+  }
+}
+
+async function dbDeleteBarang(id) {
+  if (isPgActive) {
+    const res = await pool.query('DELETE FROM barang WHERE id_barang = $1', [id]);
+    return res.rowCount > 0;
+  } else {
+    const db = loadDatabase();
+    const initialLen = db.barang.length;
+    db.barang = db.barang.filter(b => b.id_barang !== id);
+    saveDatabase(db);
+    return db.barang.length < initialLen;
+  }
+}
+
+async function dbBulkDeleteBarang(ids) {
+  if (isPgActive) {
+    const res = await pool.query('DELETE FROM barang WHERE id_barang = ANY($1)', [ids]);
+    return res.rowCount;
+  } else {
+    const db = loadDatabase();
+    const initialLen = db.barang.length;
+    db.barang = db.barang.filter(b => !ids.includes(b.id_barang));
+    saveDatabase(db);
+    return initialLen - db.barang.length;
+  }
+}
+
+async function dbBulkImportBarang(items) {
+  if (isPgActive) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const item of items) {
+        await client.query(
+          `INSERT INTO barang (id_barang, nama_barang, jumlah_barang, jenis_barang, tanggal_masuk, tanggal_keluar)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } else {
+    const db = loadDatabase();
+    db.barang = [...db.barang, ...items];
+    saveDatabase(db);
+  }
+}
+
+async function dbGetOrders() {
+  if (isPgActive) {
+    const res = await pool.query('SELECT * FROM orders ORDER BY id_order ASC');
+    return res.rows.map(r => ({
+      ...r,
+      tanggal_order: r.tanggal_order ? r.tanggal_order.toISOString().split('T')[0] : ''
+    }));
+  } else {
+    return loadDatabase().orders || [];
+  }
+}
+
+async function dbGetOrderById(id) {
+  if (isPgActive) {
+    const res = await pool.query('SELECT * FROM orders WHERE id_order = $1', [id]);
+    if (res.rows.length === 0) return null;
+    const r = res.rows[0];
+    return {
+      ...r,
+      tanggal_order: r.tanggal_order ? r.tanggal_order.toISOString().split('T')[0] : ''
+    };
+  } else {
+    return loadDatabase().orders.find(o => o.id_order === id) || null;
+  }
+}
+
+async function dbInsertOrderAndUpdateStock(order) {
+  if (isPgActive) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      const resStock = await client.query('SELECT jumlah_barang, nama_barang FROM barang WHERE id_barang = $1 FOR UPDATE', [order.id_barang]);
+      if (resStock.rows.length === 0) {
+        throw new Error("Barang tidak ditemukan.");
+      }
+      
+      const currentStock = resStock.rows[0].jumlah_barang;
+      if (currentStock < order.jumlah_order) {
+        throw new Error(`Stok barang '${resStock.rows[0].nama_barang}' tidak mencukupi. Tersedia: ${currentStock}.`);
+      }
+      
+      await client.query('UPDATE barang SET jumlah_barang = jumlah_barang - $1 WHERE id_barang = $2', [order.jumlah_order, order.id_barang]);
+      
+      await client.query(
+        `INSERT INTO orders (id_order, nama_pelanggan, id_barang, jumlah_order, status_order, tanggal_order)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+        [order.id_order, order.nama_pelanggan, order.id_barang, order.jumlah_order, order.status_order, order.tanggal_order]
+      );
+      
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } else {
+    const db = loadDatabase();
+    const barangItem = db.barang.find(b => b.id_barang === order.id_barang);
+    barangItem.jumlah_barang -= order.jumlah_order;
+    db.orders.push(order);
+    saveDatabase(db);
+  }
+}
+
+async function dbCancelOrderAndRestoreStock(orderId) {
+  if (isPgActive) {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      
+      const resOrder = await client.query('SELECT * FROM orders WHERE id_order = $1 FOR UPDATE', [orderId]);
+      if (resOrder.rows.length === 0) {
+        throw new Error("Order tidak ditemukan.");
+      }
+      
+      const order = resOrder.rows[0];
+      if (order.status_order === 'Cancelled') {
+        throw new Error("Order sudah dibatalkan.");
+      }
+      
+      await client.query('UPDATE orders SET status_order = \'Cancelled\' WHERE id_order = $1', [orderId]);
+      
+      await client.query('UPDATE barang SET jumlah_barang = jumlah_barang + $1 WHERE id_barang = $2', [order.jumlah_order, order.id_barang]);
+      
+      await client.query('COMMIT');
+      
+      const resProd = await client.query('SELECT nama_barang FROM barang WHERE id_barang = $1', [order.id_barang]);
+      return {
+        success: true,
+        namaBarang: resProd.rows.length > 0 ? resProd.rows[0].nama_barang : 'Barang',
+        jumlahOrder: order.jumlah_order
+      };
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  } else {
+    const db = loadDatabase();
+    const orderItem = db.orders.find(o => o.id_order === orderId);
+    if (!orderItem) throw new Error("Order tidak ditemukan.");
+    if (orderItem.status_order === "Cancelled") throw new Error("Order sudah dibatalkan.");
+    
+    const barangItem = db.barang.find(b => b.id_barang === orderItem.id_barang);
+    if (barangItem) {
+      barangItem.jumlah_barang += orderItem.jumlah_order;
+    }
+    orderItem.status_order = "Cancelled";
+    saveDatabase(db);
+    
+    return {
+      success: true,
+      namaBarang: barangItem ? barangItem.nama_barang : 'Barang',
+      jumlahOrder: orderItem.jumlah_order
+    };
+  }
+}
+
+async function dbUpdateOrderStatus(orderId, status) {
+  if (isPgActive) {
+    const res = await pool.query(
+      'UPDATE orders SET status_order = $1 WHERE id_order = $2 RETURNING *',
+      [status, orderId]
+    );
+    if (res.rows.length === 0) return null;
+    return res.rows[0];
+  } else {
+    const db = loadDatabase();
+    const orderItem = db.orders.find(o => o.id_order === orderId);
+    if (!orderItem) return null;
+    orderItem.status_order = status;
+    saveDatabase(db);
+    return orderItem;
+  }
+}
+
+async function dbGetUsers() {
+  if (isPgActive) {
+    const res = await pool.query('SELECT * FROM users ORDER BY username ASC');
+    return res.rows.map(r => ({
+      ...r,
+      created_at: r.created_at ? r.created_at.toISOString().split('T')[0] : ''
+    }));
+  } else {
+    return loadDatabase().users || [];
+  }
+}
+
+async function dbGetUserByUsername(username) {
+  if (isPgActive) {
+    const res = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1)', [username]);
+    if (res.rows.length === 0) return null;
+    return res.rows[0];
+  } else {
+    const db = loadDatabase();
+    return db.users.find(u => u.username.toLowerCase() === username.toLowerCase()) || null;
+  }
+}
+
+async function dbInsertUser(user) {
+  if (isPgActive) {
+    await pool.query(
+      `INSERT INTO users (username, role, created_at) VALUES ($1, $2, $3)`,
+      [user.username, user.role, user.created_at]
+    );
+  } else {
+    const db = loadDatabase();
+    if (!db.users) db.users = [];
+    db.users.push(user);
+    saveDatabase(db);
+  }
+}
+
+async function dbDeleteUser(username) {
+  if (isPgActive) {
+    const res = await pool.query('DELETE FROM users WHERE username = $1', [username]);
+    return res.rowCount > 0;
+  } else {
+    const db = loadDatabase();
+    const initialLen = db.users.length;
+    db.users = db.users.filter(u => u.username !== username);
+    saveDatabase(db);
+    return db.users.length < initialLen;
+  }
+}
+
+async function dbGetSessions() {
+  if (isPgActive) {
+    const res = await pool.query('SELECT * FROM sessions ORDER BY session ASC');
+    return res.rows;
+  } else {
+    return loadDatabase().sessions || [];
+  }
+}
+
+async function dbInsertSession(session) {
+  if (isPgActive) {
+    await pool.query(
+      `INSERT INTO sessions (session, role, timestamp) VALUES ($1, $2, $3)`,
+      [session.session, session.role, session.timestamp]
+    );
+    // Keep max 30 sessions in table
+    await pool.query(`
+      DELETE FROM sessions 
+      WHERE session NOT IN (
+        SELECT session FROM sessions 
+        ORDER BY session DESC 
+        LIMIT 30
+      )
+    `);
+  } else {
+    const db = loadDatabase();
+    db.sessions.push(session);
+    if (db.sessions.length > 30) {
+      db.sessions.shift();
+    }
+    saveDatabase(db);
+  }
+}
+
+// ================= SCHEMA DEFINITIONS & VALIDATIONS =================
 const CATEGORY_PREFIX_MAP = {
   "Electronics": "ELE",
   "Apparel": "APP",
@@ -77,15 +527,12 @@ const CATEGORY_PREFIX_MAP = {
   "Others": "OTH"
 };
 
-// Definisi Skema Database & Validasi
 const ENUM_JENIS_BARANG = Object.keys(CATEGORY_PREFIX_MAP);
 const ENUM_ROLE = ["Admin", "Gudang", "Manajer"];
 const ENUM_ORDER_STATUS = ["Pending", "Processed", "Completed", "Cancelled"];
 
-// Fungsi Validasi Tipe Data Barang
-function validateBarang(data, isEdit = false, currentIdBarang = null) {
+async function validateBarang(data, isEdit = false, currentIdBarang = null) {
   const errors = [];
-  const db = loadDatabase();
 
   // 1. nama_barang: String
   if (data.nama_barang === undefined || data.nama_barang === null) {
@@ -99,14 +546,12 @@ function validateBarang(data, isEdit = false, currentIdBarang = null) {
     errors.push("Kolom 'id_barang' wajib diisi.");
   } else {
     const idStr = String(data.id_barang).trim();
-    // Harus sesuai pattern PREFIX-NOMOR (misal ELE-101)
     const idRegex = /^[A-Z]{3}-\d+$/;
     if (!idRegex.test(idStr)) {
       errors.push("Kolom 'id_barang' harus berupa format String dengan prefix kategori valid (misal: ELE-101).");
     } else {
-      // Validasi keunikan Primary Key jika bukan edit data yang sama
       if (!isEdit || idStr !== currentIdBarang) {
-        const duplicate = db.barang.find(b => b.id_barang === idStr);
+        const duplicate = await dbGetBarangById(idStr);
         if (duplicate) {
           errors.push(`Kolom 'id_barang' dengan nilai '${idStr}' sudah ada di database (Primary Key Constraint).`);
         }
@@ -131,7 +576,6 @@ function validateBarang(data, isEdit = false, currentIdBarang = null) {
     errors.push(`Kolom 'jenis_barang' harus berupa tipe data Enum. Nilai valid: [${ENUM_JENIS_BARANG.join(', ')}].`);
   }
 
-  // Validasi kesesuaian prefix ID barang dengan jenis barang
   if (data.id_barang && data.jenis_barang) {
     const expectedPrefix = CATEGORY_PREFIX_MAP[data.jenis_barang];
     if (expectedPrefix && !data.id_barang.startsWith(expectedPrefix)) {
@@ -139,7 +583,6 @@ function validateBarang(data, isEdit = false, currentIdBarang = null) {
     }
   }
 
-  // Regex tanggal YYYY-MM-DD
   const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
 
   // 5. tanggal_masuk: Date
@@ -149,7 +592,7 @@ function validateBarang(data, isEdit = false, currentIdBarang = null) {
     errors.push("Kolom 'tanggal_masuk' harus berupa tipe data Date yang valid (format: YYYY-MM-DD).");
   }
 
-  // 6. tanggal_keluar: Date (boleh kosong, tapi jika diisi harus valid)
+  // 6. tanggal_keluar: Date
   if (data.tanggal_keluar) {
     if (typeof data.tanggal_keluar !== 'string' || !dateRegex.test(data.tanggal_keluar) || isNaN(Date.parse(data.tanggal_keluar))) {
       errors.push("Kolom 'tanggal_keluar' harus berupa tipe data Date yang valid (format: YYYY-MM-DD) atau dikosongkan.");
@@ -164,7 +607,6 @@ function validateBarang(data, isEdit = false, currentIdBarang = null) {
   };
 }
 
-// Fungsi Validasi Sesi
 function validateSession(data) {
   const errors = [];
   if (data.session === undefined || data.session === null) {
@@ -192,21 +634,19 @@ function validateSession(data) {
   return { isValid: errors.length === 0, errors };
 }
 
-// Fungsi Validasi Order
-function validateOrder(data) {
+async function validateOrder(data) {
   const errors = [];
-  const db = loadDatabase();
 
   // 1. nama_pelanggan: String
   if (!data.nama_pelanggan || typeof data.nama_pelanggan !== 'string' || data.nama_pelanggan.trim() === '') {
-    errors.push("Kolom 'nama_pelanggan' harus berupa tipe data String non-kosong.");
+    errors.push("Kolom 'nama_pelanggan' harus berupa data String non-kosong.");
   }
 
-  // 2. id_barang: String (Foreign Key Constraint)
+  // 2. id_barang: String (FK)
   if (!data.id_barang) {
     errors.push("Kolom 'id_barang' wajib ditentukan.");
   } else {
-    const productExists = db.barang.find(b => b.id_barang === data.id_barang);
+    const productExists = await dbGetBarangById(data.id_barang);
     if (!productExists) {
       errors.push(`Barang dengan ID '${data.id_barang}' tidak ditemukan di database (Foreign Key Constraint Violation).`);
     }
@@ -239,10 +679,10 @@ function validateOrder(data) {
   };
 }
 
-// --- API ENDPOINTS ---
+// ================= API ENDPOINTS =================
 
 // 1. Helper ID Auto-Generator
-app.get('/api/generate-id/:kategori', (req, res) => {
+app.get('/api/generate-id/:kategori', async (req, res) => {
   const kategori = req.params.kategori;
   const prefix = CATEGORY_PREFIX_MAP[kategori];
   
@@ -250,281 +690,292 @@ app.get('/api/generate-id/:kategori', (req, res) => {
     return res.status(400).json({ success: false, errors: ["Kategori barang tidak valid."] });
   }
 
-  const db = loadDatabase();
-  // Filter barang yang diawali prefix kategori
-  const prefixItems = db.barang.filter(b => b.id_barang.startsWith(prefix + '-'));
-  
-  let maxNum = 100; // Start counter at 101 (maxNum + 1)
-  prefixItems.forEach(item => {
-    const numPart = parseInt(item.id_barang.split('-')[1]);
-    if (!isNaN(numPart) && numPart > maxNum) {
-      maxNum = numPart;
-    }
-  });
+  try {
+    const barangList = await dbGetBarang();
+    const prefixItems = barangList.filter(b => b.id_barang.startsWith(prefix + '-'));
+    
+    let maxNum = 100;
+    prefixItems.forEach(item => {
+      const numPart = parseInt(item.id_barang.split('-')[1]);
+      if (!isNaN(numPart) && numPart > maxNum) {
+        maxNum = numPart;
+      }
+    });
 
-  const nextId = `${prefix}-${maxNum + 1}`;
-  res.json({ success: true, nextId });
+    const nextId = `${prefix}-${maxNum + 1}`;
+    res.json({ success: true, nextId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal men-generate ID."] });
+  }
 });
 
 // 2. INSPECT DATABASE SCHEMAS
-app.get('/api/db-inspect', (req, res) => {
-  const db = loadDatabase();
-  res.json({
-    schemas: {
-      barang: {
-        id_barang: "String (Primary Key - Prefix Auto-generated)",
-        nama_barang: "String",
-        jumlah_barang: "Integer",
-        jenis_barang: `Enum [${ENUM_JENIS_BARANG.join(', ')}]`,
-        tanggal_masuk: "Date (YYYY-MM-DD)",
-        tanggal_keluar: "Date (YYYY-MM-DD, Nullable)"
+app.get('/api/db-inspect', async (req, res) => {
+  try {
+    const barang = await dbGetBarang();
+    const orders = await dbGetOrders();
+    const users = await dbGetUsers();
+    const sessions = await dbGetSessions();
+
+    res.json({
+      schemas: {
+        barang: {
+          id_barang: "String (Primary Key - Prefix Auto-generated)",
+          nama_barang: "String",
+          jumlah_barang: "Integer",
+          jenis_barang: `Enum [${ENUM_JENIS_BARANG.join(', ')}]`,
+          tanggal_masuk: "Date (YYYY-MM-DD)",
+          tanggal_keluar: "Date (YYYY-MM-DD, Nullable)"
+        },
+        orders: {
+          id_order: "String (Primary Key)",
+          nama_pelanggan: "String",
+          id_barang: "String (Foreign Key)",
+          jumlah_order: "Integer",
+          status_order: `Enum [${ENUM_ORDER_STATUS.join(', ')}]`,
+          tanggal_order: "Date (YYYY-MM-DD)"
+        },
+        users: {
+          username: "String (Unique Key)",
+          role: `Enum [${ENUM_ROLE.join(', ')}]`,
+          created_at: "Date"
+        }
       },
-      orders: {
-        id_order: "String (Primary Key)",
-        nama_pelanggan: "String",
-        id_barang: "String (Foreign Key)",
-        jumlah_order: "Integer",
-        status_order: `Enum [${ENUM_ORDER_STATUS.join(', ')}]`,
-        tanggal_order: "Date (YYYY-MM-DD)"
-      },
-      users: {
-        username: "String (Unique Key)",
-        role: `Enum [${ENUM_ROLE.join(', ')}]`,
-        created_at: "Date"
+      tables: {
+        barang,
+        orders,
+        users,
+        sessions
       }
-    },
-    tables: db
-  });
-});
-
-// --- INVENTORY API ---
-app.get('/api/barang', (req, res) => {
-  const db = loadDatabase();
-  res.json(db.barang);
-});
-
-// Add Product (Insert)
-app.post('/api/barang', (req, res) => {
-  const validation = validateBarang(req.body, false);
-  if (!validation.isValid) {
-    return res.status(400).json({ success: false, errors: validation.errors });
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal memuat data inspeksi database."] });
   }
-
-  const db = loadDatabase();
-  const newBarang = {
-    id_barang: String(req.body.id_barang).trim(),
-    nama_barang: req.body.nama_barang.trim(),
-    jumlah_barang: parseInt(req.body.jumlah_barang),
-    jenis_barang: req.body.jenis_barang,
-    tanggal_masuk: req.body.tanggal_masuk,
-    tanggal_keluar: req.body.tanggal_keluar || ""
-  };
-
-  db.barang.push(newBarang);
-  saveDatabase(db);
-  res.status(201).json({ success: true, data: newBarang });
 });
 
-// Update Product
-app.put('/api/barang/:id', (req, res) => {
+// ================= INVENTORY API =================
+
+app.get('/api/barang', async (req, res) => {
+  try {
+    const items = await dbGetBarang();
+    res.json(items);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal memuat data barang."] });
+  }
+});
+
+app.post('/api/barang', async (req, res) => {
+  try {
+    const validation = await validateBarang(req.body, false);
+    if (!validation.isValid) {
+      return res.status(400).json({ success: false, errors: validation.errors });
+    }
+
+    const newBarang = {
+      id_barang: String(req.body.id_barang).trim(),
+      nama_barang: req.body.nama_barang.trim(),
+      jumlah_barang: parseInt(req.body.jumlah_barang),
+      jenis_barang: req.body.jenis_barang,
+      tanggal_masuk: req.body.tanggal_masuk,
+      tanggal_keluar: req.body.tanggal_keluar || ""
+    };
+
+    await dbInsertBarang(newBarang);
+    res.status(201).json({ success: true, data: newBarang });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal menyimpan barang baru."] });
+  }
+});
+
+app.put('/api/barang/:id', async (req, res) => {
   const idParam = req.params.id;
-  const validation = validateBarang(req.body, true, idParam);
-  if (!validation.isValid) {
-    return res.status(400).json({ success: false, errors: validation.errors });
+  try {
+    const validation = await validateBarang(req.body, true, idParam);
+    if (!validation.isValid) {
+      return res.status(400).json({ success: false, errors: validation.errors });
+    }
+
+    const existing = await dbGetBarangById(idParam);
+    if (!existing) {
+      return res.status(404).json({ success: false, errors: ["Data barang tidak ditemukan."] });
+    }
+
+    const updatedBarang = {
+      id_barang: String(req.body.id_barang).trim(),
+      nama_barang: req.body.nama_barang.trim(),
+      jumlah_barang: parseInt(req.body.jumlah_barang),
+      jenis_barang: req.body.jenis_barang,
+      tanggal_masuk: req.body.tanggal_masuk,
+      tanggal_keluar: req.body.tanggal_keluar || ""
+    };
+
+    await dbUpdateBarang(idParam, updatedBarang);
+    res.json({ success: true, data: updatedBarang });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal memperbarui data barang."] });
   }
-
-  const db = loadDatabase();
-  const idx = db.barang.findIndex(b => b.id_barang === idParam);
-  if (idx === -1) {
-    return res.status(404).json({ success: false, errors: ["Data barang tidak ditemukan."] });
-  }
-
-  db.barang[idx] = {
-    id_barang: String(req.body.id_barang).trim(),
-    nama_barang: req.body.nama_barang.trim(),
-    jumlah_barang: parseInt(req.body.jumlah_barang),
-    jenis_barang: req.body.jenis_barang,
-    tanggal_masuk: req.body.tanggal_masuk,
-    tanggal_keluar: req.body.tanggal_keluar || ""
-  };
-
-  saveDatabase(db);
-  res.json({ success: true, data: db.barang[idx] });
 });
 
-// Delete Product
-app.delete('/api/barang/:id', (req, res) => {
+app.delete('/api/barang/:id', async (req, res) => {
   const idBarang = req.params.id;
-  const db = loadDatabase();
-  const filtered = db.barang.filter(b => b.id_barang !== idBarang);
-  
-  if (filtered.length === db.barang.length) {
-    return res.status(404).json({ success: false, errors: ["Data barang tidak ditemukan."] });
+  try {
+    const deleted = await dbDeleteBarang(idBarang);
+    if (!deleted) {
+      return res.status(404).json({ success: false, errors: ["Data barang tidak ditemukan."] });
+    }
+    res.json({ success: true, message: `Barang dengan ID '${idBarang}' berhasil dihapus.` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal menghapus data barang."] });
   }
-
-  db.barang = filtered;
-  saveDatabase(db);
-  res.json({ success: true, message: `Barang dengan ID '${idBarang}' berhasil dihapus.` });
 });
 
-// Bulk Delete Barang
-app.post('/api/barang/bulk-delete', (req, res) => {
-  const ids = req.body.ids; // Array of String IDs
+app.post('/api/barang/bulk-delete', async (req, res) => {
+  const ids = req.body.ids;
   if (!Array.isArray(ids) || ids.length === 0) {
     return res.status(400).json({ success: false, errors: ["Request body 'ids' harus berupa array string."] });
   }
 
-  const db = loadDatabase();
-  const initialLength = db.barang.length;
-  db.barang = db.barang.filter(b => !ids.includes(b.id_barang));
-
-  saveDatabase(db);
-  res.json({ 
-    success: true, 
-    message: `Berhasil menghapus ${initialLength - db.barang.length} barang dari database.` 
-  });
+  try {
+    const count = await dbBulkDeleteBarang(ids);
+    res.json({ 
+      success: true, 
+      message: `Berhasil menghapus ${count} barang dari database.` 
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal menghapus massal barang."] });
+  }
 });
 
-// Bulk Import Barang
-app.post('/api/barang/bulk-import', (req, res) => {
+app.post('/api/barang/bulk-import', async (req, res) => {
   const items = req.body.items;
   if (!Array.isArray(items)) {
     return res.status(400).json({ success: false, errors: ["Data yang dikirim harus berupa array barang."] });
   }
 
   const errors = [];
-  const db = loadDatabase();
   const validItems = [];
   const importedIds = new Set();
 
-  items.forEach((item, index) => {
-    const idBarangStr = String(item.id_barang).trim();
-    
-    if (importedIds.has(idBarangStr)) {
-      errors.push(`[Index ${index}] Duplikat ID Barang '${idBarangStr}' ditemukan di dalam daftar impor.`);
-      return;
-    }
-    importedIds.add(idBarangStr);
+  try {
+    for (let index = 0; index < items.length; index++) {
+      const item = items[index];
+      const idBarangStr = String(item.id_barang).trim();
+      
+      if (importedIds.has(idBarangStr)) {
+        errors.push(`[Index ${index}] Duplikat ID Barang '${idBarangStr}' ditemukan di dalam daftar impor.`);
+        continue;
+      }
+      importedIds.add(idBarangStr);
 
-    const validation = validateBarang(item, false);
+      const validation = await validateBarang(item, false);
+      if (!validation.isValid) {
+        validation.errors.forEach(err => {
+          errors.push(`[Baris ${index + 1}: ${item.nama_barang || 'Tanpa Nama'}] ${err}`);
+        });
+      } else {
+        validItems.push({
+          id_barang: idBarangStr,
+          nama_barang: String(item.nama_barang).trim(),
+          jumlah_barang: parseInt(item.jumlah_barang),
+          jenis_barang: item.jenis_barang,
+          tanggal_masuk: item.tanggal_masuk,
+          tanggal_keluar: item.tanggal_keluar || ""
+        });
+      }
+    }
+
+    if (errors.length > 0) {
+      return res.status(400).json({ success: false, errors });
+    }
+
+    await dbBulkImportBarang(validItems);
+    res.json({ success: true, message: `Berhasil mengimpor ${validItems.length} barang.` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal mengimpor data barang."] });
+  }
+});
+
+// ================= ORDERS API =================
+
+app.get('/api/orders', async (req, res) => {
+  try {
+    const orders = await dbGetOrders();
+    res.json(orders);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal mengambil data orders."] });
+  }
+});
+
+app.post('/api/orders', async (req, res) => {
+  try {
+    const validation = await validateOrder(req.body);
     if (!validation.isValid) {
-      validation.errors.forEach(err => {
-        errors.push(`[Baris ${index + 1}: ${item.nama_barang || 'Tanpa Nama'}] ${err}`);
-      });
-    } else {
-      validItems.push({
-        id_barang: idBarangStr,
-        nama_barang: String(item.nama_barang).trim(),
-        jumlah_barang: parseInt(item.jumlah_barang),
-        jenis_barang: item.jenis_barang,
-        tanggal_masuk: item.tanggal_masuk,
-        tanggal_keluar: item.tanggal_keluar || ""
+      return res.status(400).json({ success: false, errors: validation.errors });
+    }
+
+    const idBarang = req.body.id_barang;
+    const qtyOrder = parseInt(req.body.jumlah_order);
+
+    const barangItem = await dbGetBarangById(idBarang);
+    if (barangItem.jumlah_barang < qtyOrder) {
+      return res.status(400).json({ 
+        success: false, 
+        errors: [`Stok barang '${barangItem.nama_barang}' tidak mencukupi untuk memenuhi order ini. Stok tersedia: ${barangItem.jumlah_barang} unit.`] 
       });
     }
-  });
 
-  if (errors.length > 0) {
-    return res.status(400).json({ success: false, errors });
-  }
-
-  db.barang = [...db.barang, ...validItems];
-  saveDatabase(db);
-  res.json({ success: true, message: `Berhasil mengimpor ${validItems.length} barang.` });
-});
-
-
-// --- ORDERS API ---
-
-// Ambil semua order
-app.get('/api/orders', (req, res) => {
-  const db = loadDatabase();
-  res.json(db.orders);
-});
-
-// Tambah Order Baru (Terintegrasi Pemotongan Stok)
-app.post('/api/orders', (req, res) => {
-  const validation = validateOrder(req.body);
-  if (!validation.isValid) {
-    return res.status(400).json({ success: false, errors: validation.errors });
-  }
-
-  const db = loadDatabase();
-  const idBarang = req.body.id_barang;
-  const qtyOrder = parseInt(req.body.jumlah_order);
-
-  // Cari barang di database
-  const barangItem = db.barang.find(b => b.id_barang === idBarang);
-  
-  // 1. CEK STOK BARANG (Integrasi Database Logic)
-  if (barangItem.jumlah_barang < qtyOrder) {
-    return res.status(400).json({ 
-      success: false, 
-      errors: [`Stok barang '${barangItem.nama_barang}' tidak mencukupi untuk memenuhi order ini. Stok tersedia: ${barangItem.jumlah_barang} unit.`] 
+    // Generate ID Order ORD-XXXX
+    const orders = await dbGetOrders();
+    let maxNum = 1000;
+    orders.forEach(o => {
+      const numPart = parseInt(o.id_order.split('-')[1]);
+      if (!isNaN(numPart) && numPart > maxNum) {
+        maxNum = numPart;
+      }
     });
+    const newOrderId = `ORD-${maxNum + 1}`;
+
+    const newOrder = {
+      id_order: newOrderId,
+      nama_pelanggan: req.body.nama_pelanggan.trim(),
+      id_barang: idBarang,
+      jumlah_order: qtyOrder,
+      status_order: req.body.status_order || "Pending",
+      tanggal_order: req.body.tanggal_order
+    };
+
+    await dbInsertOrderAndUpdateStock(newOrder);
+    res.status(201).json({ success: true, data: newOrder });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: [err.message || "Gagal membuat order baru."] });
   }
-
-  // 2. POTONG STOK BARANG
-  barangItem.jumlah_barang -= qtyOrder;
-
-  // 3. Generate ID Order ORD-XXXX
-  let maxNum = 1000;
-  db.orders.forEach(o => {
-    const numPart = parseInt(o.id_order.split('-')[1]);
-    if (!isNaN(numPart) && numPart > maxNum) {
-      maxNum = numPart;
-    }
-  });
-  const newOrderId = `ORD-${maxNum + 1}`;
-
-  // 4. Buat record order
-  const newOrder = {
-    id_order: newOrderId,
-    nama_pelanggan: req.body.nama_pelanggan.trim(),
-    id_barang: idBarang,
-    jumlah_order: qtyOrder,
-    status_order: req.body.status_order || "Pending",
-    tanggal_order: req.body.tanggal_order
-  };
-
-  db.orders.push(newOrder);
-  saveDatabase(db);
-  res.status(201).json({ success: true, data: newOrder });
 });
 
-// Batalkan Order (Restore Stok Barang)
-app.post('/api/orders/:id/cancel', (req, res) => {
+app.post('/api/orders/:id/cancel', async (req, res) => {
   const orderId = req.params.id;
-  const db = loadDatabase();
-
-  const orderItem = db.orders.find(o => o.id_order === orderId);
-  if (!orderItem) {
-    return res.status(404).json({ success: false, errors: ["Data order tidak ditemukan."] });
+  try {
+    const result = await dbCancelOrderAndRestoreStock(orderId);
+    res.json({ 
+      success: true, 
+      message: `Order ${orderId} berhasil dibatalkan. Stok barang '${result.namaBarang}' sebanyak ${result.jumlahOrder} unit dikembalikan ke inventaris.` 
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(400).json({ success: false, errors: [err.message] });
   }
-
-  if (orderItem.status_order === "Cancelled") {
-    return res.status(400).json({ success: false, errors: ["Order ini sudah dibatalkan sebelumnya."] });
-  }
-
-  // Cari barang terkait
-  const barangItem = db.barang.find(b => b.id_barang === orderItem.id_barang);
-  
-  // 1. RESTORE STOK (Tambah kembali stok barang)
-  if (barangItem) {
-    barangItem.jumlah_barang += orderItem.jumlah_order;
-  }
-
-  // 2. UBAH STATUS ORDER MENJADI CANCELLED
-  orderItem.status_order = "Cancelled";
-
-  saveDatabase(db);
-  res.json({ 
-    success: true, 
-    message: `Order ${orderId} berhasil dibatalkan. Stok barang '${barangItem ? barangItem.nama_barang : 'Barang'}' sebanyak ${orderItem.jumlah_order} unit dikembalikan ke inventaris.` 
-  });
 });
 
-// Update Status Order Lainnya (Processed / Completed)
-app.put('/api/orders/:id/status', (req, res) => {
+app.put('/api/orders/:id/status', async (req, res) => {
   const orderId = req.params.id;
   const newStatus = req.body.status_order;
   
@@ -532,33 +983,37 @@ app.put('/api/orders/:id/status', (req, res) => {
     return res.status(400).json({ success: false, errors: [`Status order tidak valid.`] });
   }
 
-  const db = loadDatabase();
-  const orderItem = db.orders.find(o => o.id_order === orderId);
-  if (!orderItem) {
-    return res.status(404).json({ success: false, errors: ["Data order tidak ditemukan."] });
-  }
+  try {
+    const orderItem = await dbGetOrderById(orderId);
+    if (!orderItem) {
+      return res.status(404).json({ success: false, errors: ["Data order tidak ditemukan."] });
+    }
 
-  if (orderItem.status_order === "Cancelled" && newStatus !== "Cancelled") {
-    return res.status(400).json({ success: false, errors: ["Order yang sudah dibatalkan tidak bisa diubah statusnya lagi."] });
-  }
+    if (orderItem.status_order === "Cancelled" && newStatus !== "Cancelled") {
+      return res.status(400).json({ success: false, errors: ["Order yang sudah dibatalkan tidak bisa diubah statusnya lagi."] });
+    }
 
-  orderItem.status_order = newStatus;
-  saveDatabase(db);
-  res.json({ success: true, data: orderItem });
+    const updated = await dbUpdateOrderStatus(orderId, newStatus);
+    res.json({ success: true, data: updated });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal merubah status order."] });
+  }
 });
 
+// ================= USER MANAGEMENT API =================
 
-// --- USER MANAGEMENT API (MEMBUAT AKUN OLEH ADMIN) ---
-
-// Dapatkan daftar semua user
-app.get('/api/users', (req, res) => {
-  const db = loadDatabase();
-  res.json(db.users || []);
+app.get('/api/users', async (req, res) => {
+  try {
+    const users = await dbGetUsers();
+    res.json(users);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal memuat data user."] });
+  }
 });
 
-// Registrasi User Baru (Hanya Boleh Diizinkan di Sisi Client jika Active Role == Admin)
-app.post('/api/users', (req, res) => {
-  const db = loadDatabase();
+app.post('/api/users', async (req, res) => {
   const { username, role } = req.body;
 
   if (!username || typeof username !== 'string' || username.trim() === '') {
@@ -569,72 +1024,86 @@ app.post('/api/users', (req, res) => {
     return res.status(400).json({ success: false, errors: [`Role harus berupa Enum yang valid: [${ENUM_ROLE.join(', ')}].`] });
   }
 
-  // Cek keunikan username
-  const exists = db.users.find(u => u.username.toLowerCase() === username.trim().toLowerCase());
-  if (exists) {
-    return res.status(400).json({ success: false, errors: [`Username '${username}' sudah terdaftar di database.`] });
+  try {
+    const exists = await dbGetUserByUsername(username);
+    if (exists) {
+      return res.status(400).json({ success: false, errors: [`Username '${username}' sudah terdaftar di database.`] });
+    }
+
+    const newUser = {
+      username: username.trim(),
+      role: role,
+      created_at: new Date().toISOString().split('T')[0]
+    };
+
+    await dbInsertUser(newUser);
+    res.status(201).json({ success: true, data: newUser });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal mendaftarkan user baru."] });
   }
-
-  const newUser = {
-    username: username.trim(),
-    role: role,
-    created_at: new Date().toISOString().split('T')[0]
-  };
-
-  if (!db.users) db.users = [];
-  db.users.push(newUser);
-  saveDatabase(db);
-
-  res.status(201).json({ success: true, data: newUser });
 });
 
-// Hapus Akun User (Admin Panel)
-app.delete('/api/users/:username', (req, res) => {
+app.delete('/api/users/:username', async (req, res) => {
   const usernameParam = req.params.username.trim();
-  const db = loadDatabase();
-
-  const filtered = db.users.filter(u => u.username !== usernameParam);
-  if (filtered.length === db.users.length) {
-    return res.status(404).json({ success: false, errors: ["Data user tidak ditemukan."] });
+  try {
+    const deleted = await dbDeleteUser(usernameParam);
+    if (!deleted) {
+      return res.status(404).json({ success: false, errors: ["Data user tidak ditemukan."] });
+    }
+    res.json({ success: true, message: `Akun @${usernameParam} berhasil dihapus.` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal menghapus akun user."] });
   }
-
-  db.users = filtered;
-  saveDatabase(db);
-  res.json({ success: true, message: `Akun @${usernameParam} berhasil dihapus.` });
 });
 
+// ================= SESSIONS API =================
 
-
-// --- SESSIONS API ---
-app.get('/api/sessions', (req, res) => {
-  const db = loadDatabase();
-  res.json(db.sessions);
+app.get('/api/sessions', async (req, res) => {
+  try {
+    const sessions = await dbGetSessions();
+    res.json(sessions);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal memuat data sesi."] });
+  }
 });
 
-app.post('/api/sessions', (req, res) => {
+app.post('/api/sessions', async (req, res) => {
   const validation = validateSession(req.body);
   if (!validation.isValid) {
     return res.status(400).json({ success: false, errors: validation.errors });
   }
 
-  const db = loadDatabase();
-  const newSession = {
-    session: parseInt(req.body.session),
-    role: req.body.role,
-    timestamp: req.body.timestamp
-  };
+  try {
+    const newSession = {
+      session: parseInt(req.body.session),
+      role: req.body.role,
+      timestamp: req.body.timestamp
+    };
 
-  db.sessions.push(newSession);
-  if (db.sessions.length > 30) {
-    db.sessions.shift();
+    await dbInsertSession(newSession);
+    res.status(201).json({ success: true, data: newSession });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, errors: ["Gagal mencatat sesi baru."] });
+  }
+});
+
+// ================= SERVER STARTUP =================
+async function startServer() {
+  if (isPgActive) {
+    console.log("Postgres configuration detected. Initializing database schema...");
+    await initDbSchema();
+  } else {
+    console.log("No Postgres configuration. Loading fallback local JSON database...");
+    loadDatabase();
   }
 
-  saveDatabase(db);
-  res.status(201).json({ success: true, data: newSession });
-});
+  app.listen(PORT, () => {
+    console.log(`Server database warehouse berjalan di port ${PORT}`);
+  });
+}
 
-// Start Server
-loadDatabase();
-app.listen(PORT, () => {
-  console.log(`Server database inventory berjalan di port ${PORT}`);
-});
+startServer();

@@ -47,14 +47,6 @@
       "jenis_barang": "Home & Living",
       "tanggal_masuk": "2026-05-20",
       "tanggal_keluar": ""
-    },
-    {
-      "id_barang": "APP-105",
-      "nama_barang": "Nike Air Force",
-      "jumlah_barang": 20,
-      "jenis_barang": "Apparel",
-      "tanggal_masuk": "2026-06-10",
-      "tanggal_keluar": ""
     }
   ],
   "orders": [
@@ -125,6 +117,11 @@
       "session": 4370,
       "role": "Gudang",
       "timestamp": "01:16:08"
+    },
+    {
+      "session": 6051,
+      "role": "Admin",
+      "timestamp": "01:24:30"
     }
   ]
 }
