@@ -28,7 +28,11 @@ let state = {
   searchOrderQuery: "",
   filterOrderStatus: "",
   currentPageOrder: 1,
-  pageSizeOrder: 10
+  pageSizeOrder: 10,
+
+  // Filtering History
+  searchHistoryQuery: "",
+  filterHistoryType: ""
 };
 
 // Map Harga Kategori untuk Hitung Aset / Revenue
@@ -55,6 +59,9 @@ document.addEventListener('DOMContentLoaded', () => {
   updateSessionUI();
   fetchData();
   setupEventListeners();
+
+  // Auto-refresh data secara berkala setiap 5 detik agar riwayat selalu terupdate di paling atas
+  setInterval(fetchData, 5000);
 });
 
 // GET REAL TIME TIME STAMP (HH:MM:SS)
@@ -126,6 +133,7 @@ function renderApp() {
   document.getElementById('view-home').style.display = state.activeTab === "home" ? 'block' : 'none';
   document.getElementById('view-inventory').style.display = state.activeTab === "inventory" ? 'block' : 'none';
   document.getElementById('view-orders').style.display = state.activeTab === "orders" ? 'block' : 'none';
+  document.getElementById('view-history').style.display = state.activeTab === "history" ? 'block' : 'none';
 
   if (state.activeTab === "home") {
     renderHomeView();
@@ -135,6 +143,8 @@ function renderApp() {
   } else if (state.activeTab === "orders") {
     renderOrdersMetrics();
     renderOrdersTable();
+  } else if (state.activeTab === "history") {
+    renderHistoryView();
   }
 }
 
@@ -747,6 +757,22 @@ function setupEventListeners() {
     setActiveTab("inventory");
   });
 
+  document.getElementById('navHistoryMenu').addEventListener('click', (e) => {
+    e.preventDefault();
+    setActiveTab("history");
+  });
+
+  // Search & Filter History
+  document.getElementById('searchHistoryInput').addEventListener('input', (e) => {
+    state.searchHistoryQuery = e.target.value;
+    renderHistoryView();
+  });
+
+  document.getElementById('filterHistoryType').addEventListener('change', (e) => {
+    state.filterHistoryType = e.target.value;
+    renderHistoryView();
+  });
+
   // Search & Filter Inventory
   document.getElementById('searchInput').addEventListener('input', (e) => {
     state.searchTerm = e.target.value;
@@ -981,6 +1007,7 @@ function setActiveTab(tab) {
   document.getElementById('navHome').classList.remove('active');
   document.getElementById('navInventoryMenu').classList.remove('active');
   document.getElementById('navOrdersMenu').classList.remove('active');
+  document.getElementById('navHistoryMenu').classList.remove('active');
   
   if (tab === "home") {
     document.getElementById('navHome').classList.add('active');
@@ -988,6 +1015,8 @@ function setActiveTab(tab) {
     document.getElementById('navInventoryMenu').classList.add('active');
   } else if (tab === "orders") {
     document.getElementById('navOrdersMenu').classList.add('active');
+  } else if (tab === "history") {
+    document.getElementById('navHistoryMenu').classList.add('active');
   }
 
   renderApp();
@@ -1450,4 +1479,95 @@ async function handleRegisterUserSubmit(e) {
     console.error(err);
     alert("Gagal mendaftarkan akun baru ke server.");
   }
+}
+
+// RENDER RIWAYAT AKTIVITAS TRANSAKSI GUDANG
+function renderHistoryView() {
+  const tbody = document.getElementById('historyTableBody');
+  tbody.innerHTML = '';
+  
+  let events = [];
+  
+  // 1. Catatan Barang Masuk awal
+  state.barang.forEach(item => {
+    events.push({
+      tanggal: item.tanggal_masuk,
+      tipe: 'IN',
+      nama_barang: item.nama_barang,
+      id_barang: item.id_barang,
+      jumlah: item.jumlah_barang,
+      keterangan: `Stok awal barang ditambahkan ke inventaris (${item.jenis_barang})`,
+      created_at_time: item.created_at_time || item.tanggal_masuk
+    });
+  });
+  
+  // 3. Catatan dari Order Pelanggan
+  state.orders.forEach(o => {
+    const item = state.barang.find(b => b.id_barang === o.id_barang);
+    const namaBarang = item ? item.nama_barang : "Barang Terhapus";
+    
+    if (o.status_order !== "Cancelled") {
+      events.push({
+        tanggal: o.tanggal_order,
+        tipe: 'OUT',
+        nama_barang: namaBarang,
+        id_barang: o.id_barang,
+        id_order: o.id_order,
+        jumlah: o.jumlah_order,
+        keterangan: `Pesanan pelanggan ${o.id_order} oleh ${o.nama_pelanggan} (${o.status_order})`,
+        created_at_time: o.created_at_time || o.tanggal_order
+      });
+    } else {
+      events.push({
+        tanggal: o.tanggal_order,
+        tipe: 'IN',
+        nama_barang: namaBarang,
+        id_barang: o.id_barang,
+        id_order: o.id_order,
+        jumlah: o.jumlah_order,
+        keterangan: `Pengembalian stok dari pembatalan pesanan ${o.id_order}`,
+        created_at_time: o.created_at_time ? new Date(Date.parse(o.created_at_time) + 1000).toISOString() : o.tanggal_order
+      });
+    }
+  });
+  
+  // Urutkan riwayat berdasarkan created_at_time (terbaru di atas)
+  events.sort((a, b) => {
+    const timeA = a.created_at_time || a.tanggal;
+    const timeB = b.created_at_time || b.tanggal;
+    return timeB.localeCompare(timeA);
+  });
+  
+  // Filter hasil pencarian & jenis tipe
+  let filtered = events.filter(ev => {
+    const matchSearch = 
+      ev.nama_barang.toLowerCase().includes(state.searchHistoryQuery.toLowerCase()) ||
+      ev.id_barang.toLowerCase().includes(state.searchHistoryQuery.toLowerCase()) ||
+      ev.keterangan.toLowerCase().includes(state.searchHistoryQuery.toLowerCase());
+      
+    const matchType = state.filterHistoryType === "" || ev.tipe === state.filterHistoryType;
+    
+    return matchSearch && matchType;
+  });
+  
+  if (filtered.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align: center; color: var(--text-dimmed); padding: 40px 0;">Tidak ada riwayat aktivitas gudang yang cocok.</td></tr>`;
+    return;
+  }
+  
+  filtered.forEach(ev => {
+    const badgeClass = ev.tipe === 'IN' ? 'badge-instock' : 'badge-outofstock';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><strong>${ev.tanggal}</strong></td>
+      <td><span class="badge ${badgeClass}">${ev.tipe}</span></td>
+      <td>${ev.nama_barang}</td>
+      <td><code>${ev.id_barang}</code></td>
+      <td><strong>${ev.jumlah}</strong></td>
+      <td><span style="color: var(--text-muted); font-size: 0.85rem;">${ev.keterangan}</span></td>
+    `;
+    tbody.appendChild(tr);
+  });
+  
+  lucide.createIcons();
 }

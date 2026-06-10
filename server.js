@@ -47,7 +47,8 @@ async function initDbSchema() {
         jumlah_barang INTEGER NOT NULL DEFAULT 0,
         jenis_barang VARCHAR(50) NOT NULL,
         tanggal_masuk DATE NOT NULL,
-        tanggal_keluar DATE
+        tanggal_keluar DATE,
+        created_at_time VARCHAR(100)
       )
     `);
 
@@ -59,7 +60,8 @@ async function initDbSchema() {
         id_barang VARCHAR(50) NOT NULL REFERENCES barang(id_barang) ON DELETE CASCADE,
         jumlah_order INTEGER NOT NULL,
         status_order VARCHAR(50) NOT NULL,
-        tanggal_order DATE NOT NULL
+        tanggal_order DATE NOT NULL,
+        created_at_time VARCHAR(100)
       )
     `);
 
@@ -80,6 +82,10 @@ async function initDbSchema() {
         timestamp VARCHAR(50) NOT NULL
       )
     `);
+
+    // Run dynamic migrations to add created_at_time if tables already exist
+    await client.query('ALTER TABLE barang ADD COLUMN IF NOT EXISTS created_at_time VARCHAR(100)');
+    await client.query('ALTER TABLE orders ADD COLUMN IF NOT EXISTS created_at_time VARCHAR(100)');
 
     // Seed default admin if users table is empty
     const resUsers = await client.query('SELECT COUNT(*) FROM users');
@@ -216,9 +222,9 @@ async function dbGetBarangById(id) {
 async function dbInsertBarang(item) {
   if (isPgActive) {
     await pool.query(
-      `INSERT INTO barang (id_barang, nama_barang, jumlah_barang, jenis_barang, tanggal_masuk, tanggal_keluar)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null]
+      `INSERT INTO barang (id_barang, nama_barang, jumlah_barang, jenis_barang, tanggal_masuk, tanggal_keluar, created_at_time)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null, item.created_at_time || new Date().toISOString()]
     );
   } else {
     const db = loadDatabase();
@@ -230,8 +236,8 @@ async function dbInsertBarang(item) {
 async function dbUpdateBarang(id, item) {
   if (isPgActive) {
     await pool.query(
-      `UPDATE barang SET id_barang = $1, nama_barang = $2, jumlah_barang = $3, jenis_barang = $4, tanggal_masuk = $5, tanggal_keluar = $6 WHERE id_barang = $7`,
-      [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null, id]
+      `UPDATE barang SET id_barang = $1, nama_barang = $2, jumlah_barang = $3, jenis_barang = $4, tanggal_masuk = $5, tanggal_keluar = $6, created_at_time = $7 WHERE id_barang = $8`,
+      [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null, item.created_at_time || new Date().toISOString(), id]
     );
   } else {
     const db = loadDatabase();
@@ -276,9 +282,9 @@ async function dbBulkImportBarang(items) {
       await client.query('BEGIN');
       for (const item of items) {
         await client.query(
-          `INSERT INTO barang (id_barang, nama_barang, jumlah_barang, jenis_barang, tanggal_masuk, tanggal_keluar)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-          [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null]
+          `INSERT INTO barang (id_barang, nama_barang, jumlah_barang, jenis_barang, tanggal_masuk, tanggal_keluar, created_at_time)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [item.id_barang, item.nama_barang, item.jumlah_barang, item.jenis_barang, item.tanggal_masuk, item.tanggal_keluar || null, item.created_at_time || new Date().toISOString()]
         );
       }
       await client.query('COMMIT');
@@ -337,12 +343,17 @@ async function dbInsertOrderAndUpdateStock(order) {
         throw new Error(`Stok barang '${resStock.rows[0].nama_barang}' tidak mencukupi. Tersedia: ${currentStock}.`);
       }
       
-      await client.query('UPDATE barang SET jumlah_barang = jumlah_barang - $1 WHERE id_barang = $2', [order.jumlah_order, order.id_barang]);
+      await client.query(`
+        UPDATE barang 
+        SET jumlah_barang = jumlah_barang - $1,
+            tanggal_keluar = CASE WHEN (jumlah_barang - $1) = 0 THEN CAST($2 AS DATE) ELSE tanggal_keluar END 
+        WHERE id_barang = $3
+      `, [order.jumlah_order, order.tanggal_order, order.id_barang]);
       
       await client.query(
-        `INSERT INTO orders (id_order, nama_pelanggan, id_barang, jumlah_order, status_order, tanggal_order)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [order.id_order, order.nama_pelanggan, order.id_barang, order.jumlah_order, order.status_order, order.tanggal_order]
+        `INSERT INTO orders (id_order, nama_pelanggan, id_barang, jumlah_order, status_order, tanggal_order, created_at_time)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [order.id_order, order.nama_pelanggan, order.id_barang, order.jumlah_order, order.status_order, order.tanggal_order, order.created_at_time || new Date().toISOString()]
       );
       
       await client.query('COMMIT');
@@ -356,6 +367,9 @@ async function dbInsertOrderAndUpdateStock(order) {
     const db = loadDatabase();
     const barangItem = db.barang.find(b => b.id_barang === order.id_barang);
     barangItem.jumlah_barang -= order.jumlah_order;
+    if (barangItem.jumlah_barang === 0) {
+      barangItem.tanggal_keluar = order.tanggal_order;
+    }
     db.orders.push(order);
     saveDatabase(db);
   }
@@ -379,7 +393,12 @@ async function dbCancelOrderAndRestoreStock(orderId) {
       
       await client.query('UPDATE orders SET status_order = \'Cancelled\' WHERE id_order = $1', [orderId]);
       
-      await client.query('UPDATE barang SET jumlah_barang = jumlah_barang + $1 WHERE id_barang = $2', [order.jumlah_order, order.id_barang]);
+      await client.query(`
+        UPDATE barang 
+        SET jumlah_barang = jumlah_barang + $1,
+            tanggal_keluar = CASE WHEN (jumlah_barang + $1) > 0 THEN NULL ELSE tanggal_keluar END 
+        WHERE id_barang = $2
+      `, [order.jumlah_order, order.id_barang]);
       
       await client.query('COMMIT');
       
@@ -404,6 +423,9 @@ async function dbCancelOrderAndRestoreStock(orderId) {
     const barangItem = db.barang.find(b => b.id_barang === orderItem.id_barang);
     if (barangItem) {
       barangItem.jumlah_barang += orderItem.jumlah_order;
+      if (barangItem.jumlah_barang > 0) {
+        barangItem.tanggal_keluar = "";
+      }
     }
     orderItem.status_order = "Cancelled";
     saveDatabase(db);
@@ -780,8 +802,13 @@ app.post('/api/barang', async (req, res) => {
       jumlah_barang: parseInt(req.body.jumlah_barang),
       jenis_barang: req.body.jenis_barang,
       tanggal_masuk: req.body.tanggal_masuk,
-      tanggal_keluar: req.body.tanggal_keluar || ""
+      tanggal_keluar: req.body.tanggal_keluar || "",
+      created_at_time: new Date().toISOString()
     };
+
+    if (newBarang.jumlah_barang === 0 && !newBarang.tanggal_keluar) {
+      newBarang.tanggal_keluar = new Date().toISOString().split('T')[0];
+    }
 
     await dbInsertBarang(newBarang);
     res.status(201).json({ success: true, data: newBarang });
@@ -810,8 +837,15 @@ app.put('/api/barang/:id', async (req, res) => {
       jumlah_barang: parseInt(req.body.jumlah_barang),
       jenis_barang: req.body.jenis_barang,
       tanggal_masuk: req.body.tanggal_masuk,
-      tanggal_keluar: req.body.tanggal_keluar || ""
+      tanggal_keluar: req.body.tanggal_keluar || "",
+      created_at_time: existing.created_at_time || new Date().toISOString()
     };
+
+    if (updatedBarang.jumlah_barang === 0 && !updatedBarang.tanggal_keluar) {
+      updatedBarang.tanggal_keluar = new Date().toISOString().split('T')[0];
+    } else if (updatedBarang.jumlah_barang > 0 && !req.body.tanggal_keluar) {
+      updatedBarang.tanggal_keluar = "";
+    }
 
     await dbUpdateBarang(idParam, updatedBarang);
     res.json({ success: true, data: updatedBarang });
@@ -950,7 +984,8 @@ app.post('/api/orders', async (req, res) => {
       id_barang: idBarang,
       jumlah_order: qtyOrder,
       status_order: req.body.status_order || "Pending",
-      tanggal_order: req.body.tanggal_order
+      tanggal_order: req.body.tanggal_order,
+      created_at_time: new Date().toISOString()
     };
 
     await dbInsertOrderAndUpdateStock(newOrder);

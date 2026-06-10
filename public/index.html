@@ -61,6 +61,7 @@
               <ul class="submenu">
                 <li><a href="#" class="submenu-item" id="navInventoryMenu">Inventory</a></li>
                 <li><a href="#" class="submenu-item" id="navOrdersMenu">Orders</a></li>
+                <li><a href="#" class="submenu-item" id="navHistoryMenu">History</a></li>
               </ul>
             </li>
             <!-- Link khusus Admin: Registrasi Akun -->
@@ -352,6 +353,54 @@
               <div id="pageOrderNumbersContainer" class="page-numbers"></div>
               <button class="btn-page" id="btnNextOrderPage">Next <i data-lucide="chevron-right"></i></button>
             </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- ================= VIEW 3: HISTORY ================= -->
+      <div id="view-history" style="display: none;">
+        <!-- HEADER -->
+        <header class="content-header">
+          <div class="header-title">
+            <h1>Transaction History</h1>
+          </div>
+        </header>
+
+        <!-- FILTERS FOR HISTORY -->
+        <section class="filter-section">
+          <div class="search-box">
+            <i data-lucide="search" class="search-icon"></i>
+            <input type="text" id="searchHistoryInput" placeholder="Cari nama barang, ID, atau aktivitas...">
+          </div>
+          <div class="filter-actions">
+            <div class="dropdown-container">
+              <select id="filterHistoryType" class="filter-select">
+                <option value="">Semua Tipe</option>
+                <option value="IN">Barang Masuk (IN)</option>
+                <option value="OUT">Barang Keluar (OUT)</option>
+              </select>
+            </div>
+          </div>
+        </section>
+
+        <!-- HISTORY TABLE -->
+        <section class="table-section">
+          <div class="table-container">
+            <table class="inventory-table">
+              <thead>
+                <tr>
+                  <th>Tanggal</th>
+                  <th>Tipe</th>
+                  <th>Nama Barang</th>
+                  <th>Product ID</th>
+                  <th>Jumlah</th>
+                  <th>Keterangan</th>
+                </tr>
+              </thead>
+              <tbody id="historyTableBody">
+                <!-- Baris history diisi oleh app.js -->
+              </tbody>
+            </table>
           </div>
         </section>
       </div>
