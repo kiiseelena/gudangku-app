@@ -1,0 +1,11 @@
+version: '3.8'
+
+services:
+  inventory-app:
+    build: .
+    container_name: inventory_app_container
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./db.json:/usr/src/app/db.json
+    restart: unless-stopped

@@ -1,0 +1,130 @@
+{
+  "barang": [
+    {
+      "id_barang": "ELE-101",
+      "nama_barang": "PixelMate Monitor",
+      "jumlah_barang": 594,
+      "jenis_barang": "Electronics",
+      "tanggal_masuk": "2026-01-15",
+      "tanggal_keluar": ""
+    },
+    {
+      "id_barang": "ELE-102",
+      "nama_barang": "FusionLink Router",
+      "jumlah_barang": 761,
+      "jenis_barang": "Electronics",
+      "tanggal_masuk": "2026-02-10",
+      "tanggal_keluar": ""
+    },
+    {
+      "id_barang": "APP-103",
+      "nama_barang": "VelvetAura Jacket",
+      "jumlah_barang": 0,
+      "jenis_barang": "Apparel",
+      "tanggal_masuk": "2026-03-01",
+      "tanggal_keluar": "2026-03-10"
+    },
+    {
+      "id_barang": "APP-104",
+      "nama_barang": "UrbanFlex Sneakers",
+      "jumlah_barang": 65,
+      "jenis_barang": "Apparel",
+      "tanggal_masuk": "2026-04-12",
+      "tanggal_keluar": ""
+    },
+    {
+      "id_barang": "WEL-105",
+      "nama_barang": "SilkSage Essential Oil",
+      "jumlah_barang": 165,
+      "jenis_barang": "Wellness",
+      "tanggal_masuk": "2026-05-05",
+      "tanggal_keluar": ""
+    },
+    {
+      "id_barang": "HOM-106",
+      "nama_barang": "CasaLuxe Desk Lamp",
+      "jumlah_barang": 8,
+      "jenis_barang": "Home & Living",
+      "tanggal_masuk": "2026-05-20",
+      "tanggal_keluar": ""
+    },
+    {
+      "id_barang": "APP-105",
+      "nama_barang": "Nike Air Force",
+      "jumlah_barang": 20,
+      "jenis_barang": "Apparel",
+      "tanggal_masuk": "2026-06-10",
+      "tanggal_keluar": ""
+    }
+  ],
+  "orders": [
+    {
+      "id_order": "ORD-1001",
+      "nama_pelanggan": "John Doe",
+      "id_barang": "ELE-101",
+      "jumlah_order": 5,
+      "status_order": "Completed",
+      "tanggal_order": "2026-06-01"
+    },
+    {
+      "id_order": "ORD-1002",
+      "nama_pelanggan": "Sarah Connor",
+      "id_barang": "APP-104",
+      "jumlah_order": 2,
+      "status_order": "Completed",
+      "tanggal_order": "2026-06-05"
+    },
+    {
+      "id_order": "ORD-1003",
+      "nama_pelanggan": "Dicki",
+      "id_barang": "ELE-101",
+      "jumlah_order": 1,
+      "status_order": "Completed",
+      "tanggal_order": "2026-06-10"
+    }
+  ],
+  "users": [
+    {
+      "username": "Dicki",
+      "role": "Admin",
+      "created_at": "2026-06-10"
+    },
+    {
+      "username": "jiwon",
+      "role": "Manajer",
+      "created_at": "2026-06-10"
+    },
+    {
+      "username": "jimin",
+      "role": "Gudang",
+      "created_at": "2026-06-10"
+    }
+  ],
+  "sessions": [
+    {
+      "session": 5001,
+      "role": "Admin",
+      "timestamp": "08:30:15"
+    },
+    {
+      "session": 3054,
+      "role": "Admin",
+      "timestamp": "01:06:52"
+    },
+    {
+      "session": 6063,
+      "role": "Manajer",
+      "timestamp": "01:15:37"
+    },
+    {
+      "session": 1705,
+      "role": "Admin",
+      "timestamp": "01:15:50"
+    },
+    {
+      "session": 4370,
+      "role": "Gudang",
+      "timestamp": "01:16:08"
+    }
+  ]
+}
